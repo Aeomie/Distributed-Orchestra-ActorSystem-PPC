@@ -8,7 +8,6 @@ case class Terminal(id: Int, ip: String, port: Int)
 object Projet {
 
   def main(args: Array[String]) {
-    var first = true;
     // Gestion des erreurs
     if (args.size != 1) {
       println("Erreur de syntaxe : run <num>")
@@ -16,9 +15,9 @@ object Projet {
     }
 
     val id: Int = args(0).toInt
-     val n: Int = 3
-    if (id < 0 || id > n) {
-      println(s"Erreur : <num> doit etre compris entre 0 et $n")
+
+    if (id < 0 || id > 3) {
+      println("Erreur : <num> doit etre compris entre 0 et 3")
       sys.exit(1)
     }
 
@@ -42,18 +41,15 @@ object Projet {
 
     println(musicienlist)
 
-    Initialisation du node <id>
-    if (first) {
-     val system = ActorSystem("MozartSystem" + id, ConfigFactory.load().getConfig("system" + id))
-     val orchestra_chef = system.actorOf(Props(new ChefOrchestra(id, musicienlist)), "Musicien"+id);
-     orchestra_chef ! Start
-      first = false
-    }else{
-     val system = ActorSystem("MozartSystem" + id, ConfigFactory.load().getConfig("system" + id))
-     val musicien = system.actorOf(Props(new Musicien(id, musicienlist)), "Musicien"+id)
+    // Initialisation du node <id>
+    val system = ActorSystem(
+      "MozartSystem" + id,
+      ConfigFactory.load().getConfig("system" + id)
+    )
+    val musicien =
+      system.actorOf(Props(new Musicien(id, musicienlist)), "Musicien" + id)
 
-     musicien ! Start
-    }
+    musicien ! Start
   }
 
 }
