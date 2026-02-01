@@ -31,6 +31,7 @@ object Projet {
         .getConfig("system" + i)
         .getValue("akka.remote.netty.tcp.hostname")
         .render()
+        .replaceAll("\"", "")
       val port = ConfigFactory
         .load()
         .getConfig("system" + i)
@@ -49,7 +50,10 @@ object Projet {
     val musicien =
       system.actorOf(Props(new Musicien(id, musicienlist)), "Musicien" + id)
 
-    musicien ! Start
+    musicien ! StartTest
+
+    // Keep the JVM running so the actor system stays alive
+    Thread.currentThread().join()
   }
 
 }
