@@ -22,6 +22,7 @@ case class WinnerAnnounceTimeout(winnerId: Int)
 case class ChefIs(ref: ActorRef)
 case class Register(id: Int)
 case object WindowExpired
+case object ChefHeartbeat
 
 // Bully Election Messages
 case object Alive
@@ -30,6 +31,8 @@ case class ChefAnnouncement(id: Int, creationTime: Long, ref: ActorRef)
 case object StartElection
 
 class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
+
+  import context.dispatcher
 
   val displayActor = context.actorOf(Props[DisplayActor], name = "displayActor")
 
@@ -52,6 +55,7 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
   private var joined = Set.empty[Int]
   private var musicians = Map.empty[Int, ActorRef]
   private var cancellable: Cancellable = Cancellable.alreadyCancelled
+  private var heartbeatCancellable: Cancellable = Cancellable.alreadyCancelled
   private var foundChef: Boolean = false
   private var responsesReceived: Int = 0
 
@@ -357,9 +361,25 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       displayActor ! Message(
         s"Chef $id: received Alive? from ${sender().path.name}"
       )
-      // Chef should announce itself, not just respond as alive
+      // Make bully election reliable: candidate counts me as alive immediately
       sender() ! AliveResponse(this.id, this.creationTime)
+      // Also tell them I'm chef (optional but helpful)
+      sender() ! ChefAnnouncement(this.id, this.creationTime, self)
     }
+
+    case ChefHeartbeat => {
+      // Periodically announce chef status to all musicians
+      for (terminal <- terminaux.filter(_.id != this.id)) {
+        val remoteMusician = context.actorSelection(
+          s"akka.tcp://MozartSystem${terminal.id}@${terminal.ip}:${terminal.port}/user/Musicien${terminal.id}"
+        )
+        remoteMusician ! ChefAnnouncement(this.id, this.creationTime, self)
+      }
+      // Schedule next heartbeat
+      heartbeatCancellable =
+        context.system.scheduler.scheduleOnce(1.second, self, ChefHeartbeat)
+    }
+
     case ChefAnnouncement(chefId, chefCreationTime, chefRef) => {
       // Chef checks if this is a better chef
       if (
@@ -369,6 +389,8 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
         displayActor ! Message(
           s"Chef $id: stepping down for better chef $chefId"
         )
+        // Cancel heartbeat when stepping down
+        if (!heartbeatCancellable.isCancelled) heartbeatCancellable.cancel()
         isChef = false
         context.become(follower)
         self ! ChefAnnouncement(chefId, chefCreationTime, chefRef)
@@ -391,6 +413,11 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
 
     context.become(chef)
     self ! Start
+
+    // Start heartbeat to periodically announce chef status
+    if (!heartbeatCancellable.isCancelled) heartbeatCancellable.cancel()
+    heartbeatCancellable =
+      context.system.scheduler.scheduleOnce(1.second, self, ChefHeartbeat)
   }
 
   /** Start the bully election process:
