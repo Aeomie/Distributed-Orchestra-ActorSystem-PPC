@@ -2,10 +2,12 @@ package upmc.akka.leader
 
 import akka.actor._
 import scala.concurrent.duration._
+import upmc.akka.ppc.PlayerActor
 
 case object Start
 case object Abort
 case object StartPerformance
+case class PlayNote(pitch: Int, vel: Int, dur: Int)
 case object StartTest
 case object StartTestDone
 case object AreYouAlive
@@ -35,6 +37,7 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
   import context.dispatcher
 
   val displayActor = context.actorOf(Props[DisplayActor], name = "displayActor")
+  val playerActor = context.actorOf(Props[PlayerActor], name = "playerActor")
 
   // Creation time for bully election (lower = higher priority)
   val creationTime: Long = System.currentTimeMillis()
@@ -184,6 +187,12 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
     case StartPerformance => {
       displayActor ! Message(s"Musicien $id: starting to play 🎵")
     }
+    case PlayNote(pitch, vel, dur) => {
+      displayActor ! Message(
+        s"Musicien $id: playing note (pitch=$pitch, vel=$vel, dur=$dur)"
+      )
+      playerActor ! PlayerActor.MidiNote(pitch, vel, dur, 0)
+    }
     case Abort => {
       displayActor ! Message(s"Musicien $id: abort received, stopping")
       context.stop(self)
@@ -325,8 +334,17 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       )
       if (!cancellable.isCancelled)
         cancellable.cancel()
+
+      // Generate random note (pitch 60-84 = C4 to C6, velocity 64-127, duration 500-2000ms)
+      val randomPitch = 60 + scala.util.Random.nextInt(25)
+      val randomVel = 64 + scala.util.Random.nextInt(64)
+      val randomDur = 500 + scala.util.Random.nextInt(1500)
+
+      sender() ! PlayNote(randomPitch, randomVel, randomDur)
       sender() ! StartPerformance
-      displayActor ! Message(s"Chef: musician $mid started playing 🎵")
+      displayActor ! Message(
+        s"Chef: musician $mid started playing 🎵 (note: pitch=$randomPitch)"
+      )
     }
     case Unregister(mid) => {
       musicians -= mid
