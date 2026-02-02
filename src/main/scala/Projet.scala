@@ -50,7 +50,7 @@ object Projet {
     val musicien =
       system.actorOf(Props(new Musicien(id, musicienlist)), "Musicien" + id)
 
-    musicien ! StartTest
+    musicien ! Start
 
     // Keep the JVM running so the actor system stays alive
     Thread.currentThread().join()

@@ -5,20 +5,26 @@ import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
 
 case object Start
-case object TryClaimChef
 case object Abort
 case object StartPerformance
 case object StartTest
 case object AreYouAlive
 case object ImAlive
+case object ContinueElection
+case object ComputeWinner
+case object WhoIsChef
+case object AskingChefTimeOut
+case class ChefHere(id: Int, creationTime: Long)
+case object NoChefHere
+case class WinnerAnnounceTimeout(winnerId: Int)
 
 case class ChefIs(ref: ActorRef)
-case class Register(id: Int, ref: ActorRef)
+case class Register(id: Int)
 case object WindowExpired
 
 // Bully Election Messages
 case object Alive
-case class AliveResponse(id: Int, creationTime: Long, ref: ActorRef)
+case class AliveResponse(id: Int, creationTime: Long)
 case class ChefAnnouncement(id: Int, creationTime: Long, ref: ActorRef)
 case object StartElection
 
@@ -54,20 +60,24 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
 
     // Initialisation
     case Start => {
-      // Wait for cluster to stabilize before starting election
-      context.system.scheduler.scheduleOnce(2.seconds) {
-        self ! StartElection
+      displayActor ! Message(s"Musicien $id: started as follower")
+      for (terminal <- terminaux.filter(_.id != this.id)) {
+        val remoteMusician = context.actorSelection(
+          s"akka.tcp://MozartSystem${terminal.id}@${terminal.ip}:${terminal.port}/user/Musicien${terminal.id}"
+        )
+        remoteMusician ! WhoIsChef
       }
+      electionCancellable = context.system.scheduler.scheduleOnce(
+        500.millis,
+        self,
+        AskingChefTimeOut
+      )
     }
 
     case StartElection => {
       if (!electionInProgress) {
         startBullyElection()
       }
-    }
-
-    case TryClaimChef => {
-      // Deprecated, kept for compatibility
     }
 
     case StartTest => {
@@ -94,6 +104,53 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
             s"Musicien $id: Musicien $otherId - test completed"
           )
         }
+      }
+    }
+
+    case AskingChefTimeOut => {
+      if (!foundChef && !electionInProgress) {
+        self ! StartElection
+      }
+    }
+
+    case WhoIsChef => {
+      sender() ! NoChefHere
+    }
+    case ChefHere(chefId, chefCreationTime) => {
+      displayActor ! Message(
+        s"Musicien $id: received ChefHere from $chefId"
+      )
+
+      val betterThanCurrent =
+        currentChefId.isEmpty ||
+          chefCreationTime < currentChefCreationTime.get ||
+          (chefCreationTime == currentChefCreationTime.get && chefId < currentChefId.get)
+
+      if (betterThanCurrent) {
+        // Unwatch old chef if different
+        currentChefRef.foreach { old =>
+          context.unwatch(old)
+        }
+
+        // Stop any pending election timers
+        electionInProgress = false
+        // Follow new chef
+        isChef = false
+        foundChef = true
+        currentChefId = Some(chefId)
+        currentChefCreationTime = Some(chefCreationTime)
+        if (!electionCancellable.isCancelled) electionCancellable.cancel()
+        // We don't have the ActorRef here, so we can't watch it
+        currentChefRef = Some(sender())
+        context.watch(sender())
+        sender() ! Register(this.id)
+        displayActor ! Message(
+          s"Musicien $id: now following Chef $chefId"
+        )
+      } else {
+        displayActor ! Message(
+          s"Musicien $id: ignoring worse chef from $chefId"
+        )
       }
     }
 
@@ -130,8 +187,7 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       )
       val response = AliveResponse(
         id = this.id,
-        creationTime = this.creationTime,
-        ref = self
+        creationTime = this.creationTime
       )
       sender() ! response
     }
@@ -141,41 +197,63 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
         displayActor ! Message(
           s"Musicien $id: got AliveResponse from ${resp.id}"
         )
-        aliveResponses += (resp.id -> (resp.creationTime, resp.ref))
+        aliveResponses += (resp.id -> (resp.creationTime, sender()))
       }
     }
 
+    case ContinueElection => {
+      continueElection()
+    }
+    case ComputeWinner => {
+      electChefFromInfo()
+    }
+    case WinnerAnnounceTimeout(winnerId) => {
+      if (electionInProgress && currentChefId.isEmpty) {
+        // Winner didn't announce - probably crashed
+        displayActor ! Message(
+          s"Musicien $id: Chef $winnerId didn't announce, recalculating"
+        )
+        electionInProgress = false
+        startBullyElection()
+      }
+    }
     case ChefAnnouncement(chefId, chefCreationTime, chefRef) => {
       displayActor ! Message(
         s"Musicien $id: received ChefAnnouncement from $chefId"
       )
 
-      val isBetterChef =
+      val betterThanCurrent =
         currentChefId.isEmpty ||
           chefCreationTime < currentChefCreationTime.get ||
           (chefCreationTime == currentChefCreationTime.get && chefId < currentChefId.get)
 
-      if (isBetterChef) {
-        // Unwatch old chef
-        if (currentChefRef.isDefined && !isChef) {
-          context.unwatch(currentChefRef.get)
+      if (betterThanCurrent) {
+        if (!electionCancellable.isCancelled) electionCancellable.cancel()
+
+        // Unwatch old chef if different
+        currentChefRef.foreach { old =>
+          if (old != chefRef) context.unwatch(old)
         }
 
-        // Follow new chef
-        currentChefId = Some(chefId)
-        currentChefCreationTime = Some(chefCreationTime)
-        currentChefRef = Some(chefRef)
-        isChef = (chefId == this.id)
-
-        displayActor ! Message(
-          s"Musicien $id: now following Chef $chefId"
-        )
-
-        context.watch(chefRef)
+        // Stop any pending election timers
         electionInProgress = false
+        // If the announcement says *I* am the chef, actually become chef
+        if (chefId == this.id) {
+          // If I'm already chef, ignore; else switch properly
+          if (!isChef) becomeChef()
+        } else {
+          // Follow new chef
+          isChef = false
+          foundChef = true
+          currentChefId = Some(chefId)
+          currentChefCreationTime = Some(chefCreationTime)
+          currentChefRef = Some(chefRef)
+          context.watch(chefRef)
+          chefRef ! Register(this.id)
 
-        if (!electionCancellable.isCancelled) {
-          electionCancellable.cancel()
+          displayActor ! Message(
+            s"Musicien $id: now following Chef $chefId"
+          )
         }
       } else {
         displayActor ! Message(
@@ -184,16 +262,23 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       }
     }
 
-    case Terminated(ref) if currentChefRef.contains(ref) && !isChef => {
+    case Terminated(ref) if currentChefRef.contains(ref) && !isChef =>
       displayActor ! Message(
         s"Musicien $id: Chef terminated, starting new election"
       )
+
+      // we no longer have a chef
+      foundChef = false
       currentChefRef = None
       currentChefId = None
       currentChefCreationTime = None
-      context.unwatch(ref)
+
+      // stop any pending timers to avoid overlapping elections
+      if (!electionCancellable.isCancelled) electionCancellable.cancel()
+      electionInProgress = false
+
+      // start election (guarded inside StartElection anyway)
       self ! StartElection
-    }
 
   }
 
@@ -209,14 +294,17 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       displayActor ! Message("Chef: 30s join window started")
     }
 
-    case Register(mid, ref) => {
-      musicians += (mid -> ref)
+    case WhoIsChef => {
+      sender() ! ChefHere(this.id, this.creationTime)
+    }
+    case Register(mid) => {
+      musicians += (mid -> sender())
       joined += mid
-      context.watch(ref)
+      context.watch(sender())
       displayActor ! Message(s"Chef: musician $mid joined (${joined.size})")
       if (!cancellable.isCancelled)
         cancellable.cancel()
-      ref ! StartPerformance
+      sender() ! StartPerformance
       displayActor ! Message(s"Chef: musician $mid started playing 🎵")
     }
 
@@ -256,8 +344,7 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       )
       val response = AliveResponse(
         id = this.id,
-        creationTime = this.creationTime,
-        ref = self
+        creationTime = this.creationTime
       )
       sender() ! response
     }
@@ -280,10 +367,16 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
 
   private def becomeChef(): Unit = {
     displayActor ! Message(s"Musicien $id CLAIMED CHEF role")
+
+    // Stop election state
+    electionInProgress = false
+    if (!electionCancellable.isCancelled) electionCancellable.cancel()
+
     isChef = true
     currentChefId = Some(this.id)
     currentChefCreationTime = Some(this.creationTime)
     currentChefRef = Some(self)
+
     context.become(chef)
     self ! Start
   }
@@ -294,6 +387,11 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
     *   3. If someone answers -> check if there's a chef or elect one
     */
   private def startBullyElection(): Unit = {
+    currentChefRef.foreach(context.unwatch)
+    currentChefRef = None
+    currentChefId = None
+    currentChefCreationTime = None
+    isChef = false
     electionInProgress = true
     aliveResponses = Map.empty
 
@@ -312,12 +410,9 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
     }
 
     // Wait 500ms for responses
-    if (!electionCancellable.isCancelled) {
-      electionCancellable.cancel()
-    }
-    electionCancellable = context.system.scheduler.scheduleOnce(500.millis) {
-      self ! continueElection()
-    }
+    if (!electionCancellable.isCancelled) electionCancellable.cancel()
+    electionCancellable =
+      context.system.scheduler.scheduleOnce(500.millis, self, ContinueElection)
   }
 
   /** Continue election after Alive? timeout
@@ -349,9 +444,11 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       if (!electionCancellable.isCancelled) {
         electionCancellable.cancel()
       }
-      electionCancellable = context.system.scheduler.scheduleOnce(100.millis) {
-        self ! electChefFromInfo()
-      }
+      // Wait a bit then calculate winner (we already have all info)
+      if (!electionCancellable.isCancelled) electionCancellable.cancel()
+      electionCancellable =
+        context.system.scheduler.scheduleOnce(100.millis, self, ComputeWinner)
+
     }
   }
 
@@ -360,28 +457,23 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
   private def electChefFromInfo(): Unit = {
     if (!electionInProgress) return
 
-    // We already have all info from AliveResponse messages
-    val allCandidates = aliveResponses.map { case (id, (time, _)) =>
-      (id, time)
-    } ++ Map(this.id -> this.creationTime)
+    // Build candidate list: everyone who responded + me
+    val allCandidates: Map[Int, Long] =
+      aliveResponses.map { case (mid, (ctime, _)) => (mid, ctime) } +
+        (this.id -> this.creationTime)
 
-    // Find winner: earliest creation time, or smallest id if same time
-    val winner = allCandidates.minBy { case (id, time) =>
-      (time, id)
-    }
-    val (winnerId, winnerCreationTime) = winner
+    // Winner: earliest creationTime, tie -> smallest id
+    val (winnerId, winnerCreationTime) =
+      allCandidates.minBy { case (mid, ctime) => (ctime, mid) }
 
-    displayActor ! Message(
-      s"Musicien $id: elected Chef $winnerId"
-    )
+    displayActor ! Message(s"Musicien $id: elected Chef $winnerId")
 
     if (winnerId == this.id) {
-      // I won!
+      // I won
       becomeChef()
 
-      // Announce to all others
-      val otherMusicians = terminaux.filter(_.id != this.id)
-      for (terminal <- otherMusicians) {
+      // Announce to all others (optional but useful)
+      for (terminal <- terminaux.filter(_.id != this.id)) {
         val remoteMusician = context.actorSelection(
           s"akka.tcp://MozartSystem${terminal.id}@${terminal.ip}:${terminal.port}/user/Musicien${terminal.id}"
         )
@@ -389,25 +481,28 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       }
 
     } else {
-      // Someone else won - wait for THEM to announce themselves
-      displayActor ! Message(
-        s"Musicien $id: waiting for Chef $winnerId to announce (2s timeout)"
-      )
+      // Someone else won -> follow immediately (no waiting)
+      val winnerRef: ActorRef = aliveResponses(winnerId)._2
 
-      // Wait 3 seconds for winner's announcement
-      if (!electionCancellable.isCancelled) {
-        electionCancellable.cancel()
-      }
-      electionCancellable = context.system.scheduler.scheduleOnce(3.seconds) {
-        if (electionInProgress && currentChefId.isEmpty) {
-          // Winner didn't announce - probably crashed
-          displayActor ! Message(
-            s"Musicien $id: Chef $winnerId didn't announce, recalculating"
-          )
-          electionInProgress = false
-          startBullyElection()
-        }
-      }
+      foundChef = true
+      electionInProgress = false
+      if (!electionCancellable.isCancelled) electionCancellable.cancel()
+
+      // Stop watching old chef if any
+      currentChefRef.foreach(context.unwatch)
+
+      isChef = false
+      currentChefId = Some(winnerId)
+      currentChefCreationTime = Some(winnerCreationTime)
+      currentChefRef = Some(winnerRef)
+
+      context.watch(winnerRef)
+      winnerRef ! Register(this.id)
+
+      displayActor ! Message(
+        s"Musicien $id: now following elected Chef $winnerId"
+      )
     }
   }
+
 }
