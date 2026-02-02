@@ -3,9 +3,12 @@ package upmc.akka.leader
 import akka.actor._
 import scala.concurrent.duration._
 import scala.concurrent.ExecutionContext.Implicits.global
+import upmc.akka.ppc.PlayerActor
+import scala.util.Random
 
 case object Start
 case object Abort
+case class TestNote(pitch: Int, chan: Int, vel: Int)
 case object StartPerformance
 case object StartTest
 case object AreYouAlive
@@ -31,6 +34,7 @@ case object StartElection
 class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
 
   val displayActor = context.actorOf(Props[DisplayActor], name = "displayActor")
+  val playerActor = context.actorOf(Props[PlayerActor], name = "playerActor")
 
   // Creation time for bully election (lower = higher priority)
   val creationTime: Long = System.currentTimeMillis()
@@ -45,6 +49,9 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
   private var electionInProgress: Boolean = false
   private var aliveResponses: Map[Int, (Long, ActorRef)] = Map.empty
   private var electionCancellable: Cancellable = Cancellable.alreadyCancelled
+
+  // Test note received from chef
+  private var testNote: Option[TestNote] = None
 
   // Orchestra state (only used if I'm chef)
   private var chefSlotRef: Option[ActorRef] = None
@@ -172,8 +179,26 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
         displayActor ! Message(s"Musicien $id: Musicien $senderId is alive")
       }
     }
+    case TestNote(pitch, chan, vel) => {
+      testNote = Some(TestNote(pitch, chan, vel))
+      displayActor ! Message(
+        s"Musicien $id: received test note (pitch=$pitch, chan=$chan, vel=$vel)"
+      )
+    }
     case StartPerformance => {
       displayActor ! Message(s"Musicien $id: starting to play 🎵")
+      // Play the test note if we have one
+      testNote.foreach { note =>
+        playerActor ! PlayerActor.MidiNote(
+          note.pitch,
+          note.vel,
+          1000,
+          0
+        ) // 1 second duration, immediate start
+        displayActor ! Message(
+          s"Musicien $id: playing test note (pitch=${note.pitch})"
+        )
+      }
     }
     case Abort => {
       displayActor ! Message(s"Musicien $id: abort received, stopping")
@@ -304,6 +329,16 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       displayActor ! Message(s"Chef: musician $mid joined (${joined.size})")
       if (!cancellable.isCancelled)
         cancellable.cancel()
+
+      // Send random test note (pitch 60-84 = middle C to high C, channel 1, velocity 64-127)
+      val randomPitch = 60 + Random.nextInt(25) // C4 to C6
+      val randomVel = 64 + Random.nextInt(64) // medium to loud
+      val testNote = TestNote(randomPitch, 1, randomVel)
+      sender() ! testNote
+      displayActor ! Message(
+        s"Chef: sent test note (pitch=$randomPitch, vel=$randomVel) to musician $mid"
+      )
+
       sender() ! StartPerformance
       displayActor ! Message(s"Chef: musician $mid started playing 🎵")
     }
