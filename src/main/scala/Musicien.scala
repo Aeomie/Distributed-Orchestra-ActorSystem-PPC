@@ -15,6 +15,7 @@ case object ComputeWinner
 case object WhoIsChef
 case object AskingChefTimeOut
 case class ChefHere(id: Int, creationTime: Long)
+case class Unregister(id: Int)
 case object NoChefHere
 case class WinnerAnnounceTimeout(winnerId: Int)
 
@@ -127,9 +128,10 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
           (chefCreationTime == currentChefCreationTime.get && chefId < currentChefId.get)
 
       if (betterThanCurrent) {
-        // Unwatch old chef if different
-        currentChefRef.foreach { old =>
-          context.unwatch(old)
+        // unregister old chef
+        currentChefRef.foreach { oldChef =>
+          if (oldChef != sender()) oldChef ! Unregister(this.id)
+          context.unwatch(oldChef)
         }
 
         // Stop any pending election timers
@@ -140,6 +142,7 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
         currentChefId = Some(chefId)
         currentChefCreationTime = Some(chefCreationTime)
         if (!electionCancellable.isCancelled) electionCancellable.cancel()
+
         // We don't have the ActorRef here, so we can't watch it
         currentChefRef = Some(sender())
         context.watch(sender())
@@ -230,13 +233,15 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       if (betterThanCurrent) {
         if (!electionCancellable.isCancelled) electionCancellable.cancel()
 
+        // STOP ELECTION IMMEDIATELY
+        electionInProgress = false
+        aliveResponses = Map.empty
+
         // Unwatch old chef if different
         currentChefRef.foreach { old =>
           if (old != chefRef) context.unwatch(old)
         }
 
-        // Stop any pending election timers
-        electionInProgress = false
         // If the announcement says *I* am the chef, actually become chef
         if (chefId == this.id) {
           // If I'm already chef, ignore; else switch properly
@@ -301,13 +306,21 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       musicians += (mid -> sender())
       joined += mid
       context.watch(sender())
-      displayActor ! Message(s"Chef: musician $mid joined (${joined.size})")
+      displayActor ! Message(
+        s"Chef: musician $mid registered and joined (${joined.size})"
+      )
       if (!cancellable.isCancelled)
         cancellable.cancel()
       sender() ! StartPerformance
       displayActor ! Message(s"Chef: musician $mid started playing 🎵")
     }
-
+    case Unregister(mid) => {
+      musicians -= mid
+      joined -= mid
+      displayActor ! Message(
+        s"Chef: musician $mid unregistered (${joined.size})"
+      )
+    }
     case Terminated(ref) => {
       musicians = musicians.filterNot { case (_, r) => r == ref }
       joined = joined.filter(id => musicians.contains(id))
@@ -342,11 +355,8 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       displayActor ! Message(
         s"Chef $id: received Alive? from ${sender().path.name}"
       )
-      val response = AliveResponse(
-        id = this.id,
-        creationTime = this.creationTime
-      )
-      sender() ! response
+      // Chef should announce itself, not just respond as alive
+      sender() ! AliveResponse(this.id, this.creationTime)
     }
     case ChefAnnouncement(chefId, chefCreationTime, chefRef) => {
       // Chef checks if this is a better chef
