@@ -227,16 +227,19 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       }
     }
     case ChefAnnouncement(chefId, chefCreationTime, chefRef) => {
-      displayActor ! Message(
-        s"Musicien $id: received ChefAnnouncement from $chefId"
-      )
-
       val betterThanCurrent =
         currentChefId.isEmpty ||
           chefCreationTime < currentChefCreationTime.get ||
           (chefCreationTime == currentChefCreationTime.get && chefId < currentChefId.get)
 
+      val isSameChef = currentChefId.contains(chefId) &&
+        currentChefCreationTime.contains(chefCreationTime)
+
       if (betterThanCurrent) {
+        displayActor ! Message(
+          s"Musicien $id: received ChefAnnouncement from $chefId"
+        )
+
         if (!electionCancellable.isCancelled) electionCancellable.cancel()
 
         // STOP ELECTION IMMEDIATELY
@@ -266,11 +269,16 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
             s"Musicien $id: now following Chef $chefId"
           )
         }
-      } else {
+      } else if (!isSameChef) {
+        // Only print if it's a different (worse) chef, not heartbeat from current chef
+        displayActor ! Message(
+          s"Musicien $id: received ChefAnnouncement from $chefId"
+        )
         displayActor ! Message(
           s"Musicien $id: ignoring worse chef from $chefId"
         )
       }
+      // If isSameChef and !betterThanCurrent, it's just a heartbeat - stay silent
     }
 
     case Terminated(ref) if currentChefRef.contains(ref) && !isChef =>
