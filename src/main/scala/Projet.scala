@@ -51,9 +51,6 @@ object Projet {
       system.actorOf(Props(new Musicien(id, musicienlist)), "Musicien" + id)
 
     musicien ! Start
-
-    // Keep the JVM running so the actor system stays alive
-    Thread.currentThread().join()
   }
 
 }

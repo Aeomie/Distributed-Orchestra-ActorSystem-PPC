@@ -1,0 +1,1 @@
+When u shut down the bach sbt console, the JVM will also stop, terminating all actors and threads associated with it.
