@@ -2,12 +2,12 @@ package upmc.akka.leader
 
 import akka.actor._
 import scala.concurrent.duration._
-import scala.concurrent.ExecutionContext.Implicits.global
 
 case object Start
 case object Abort
 case object StartPerformance
 case object StartTest
+case object StartTestDone
 case object AreYouAlive
 case object ImAlive
 case object ContinueElection
@@ -98,13 +98,15 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       }
 
       // Wait 1 second then show results
-      context.system.scheduler.scheduleOnce(1.seconds) {
-        val otherIds = terminaux.filter(_.id != this.id).map(_.id)
-        for (otherId <- otherIds) {
-          displayActor ! Message(
-            s"Musicien $id: Musicien $otherId - test completed"
-          )
-        }
+      context.system.scheduler.scheduleOnce(1.seconds, self, StartTestDone)
+    }
+
+    case StartTestDone => {
+      val otherIds = terminaux.filter(_.id != this.id).map(_.id)
+      for (otherId <- otherIds) {
+        displayActor ! Message(
+          s"Musicien $id: Musicien $otherId - test completed"
+        )
       }
     }
 
