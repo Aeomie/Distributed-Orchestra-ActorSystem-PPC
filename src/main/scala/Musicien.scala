@@ -27,6 +27,8 @@ case class ChefIs(ref: ActorRef)
 case class Register(id: Int)
 case object WindowExpired
 case object ChefHeartbeat
+case object RequestMusic
+case class FinishedPlaying(musicianId: Int)
 
 // Bully Election Messages
 case object Alive
@@ -67,6 +69,8 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
   private var currentPosition = 0 // 0-15 (16 measures)
   private var pendingMusicianRef: Option[ActorRef] =
     None // musician waiting for measure
+  private var currentlyPlaying: Option[Int] = None // musician currently playing
+  private var requestQueue: List[Int] = List.empty // musicians waiting to play
 
   def receive: Receive = follower
 
@@ -198,6 +202,12 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
         s"Musicien $id: Playing measure with ${chords.length} chords"
       )
       playerActor ! Measure(chords)
+    }
+    case PlayerActor.MeasureFinished => {
+      displayActor ! Message(
+        s"Musicien $id: Finished playing, notifying chef"
+      )
+      currentChefRef.foreach(_ ! FinishedPlaying(id))
     }
     case PlayNote(pitch, vel, dur) => {
       displayActor ! Message(
@@ -365,8 +375,66 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
         s"Chef: musician $mid started playing 🎵"
       )
 
-      // Send music to the newly registered musician
-      sendMusic(mid, sender())
+      // Send music to first musician, queue others
+      if (currentlyPlaying.isEmpty) {
+        currentlyPlaying = Some(mid)
+        sendMusic(mid, sender())
+      } else {
+        if (!requestQueue.contains(mid)) {
+          requestQueue = requestQueue :+ mid
+        }
+      }
+    }
+    case RequestMusic => {
+      val senderRef = sender()
+      musicians.find(_._2 == senderRef).foreach { case (mid, ref) =>
+        if (currentlyPlaying.isEmpty) {
+          // No one playing, send music immediately
+          displayActor ! Message(
+            s"Chef: Musician $mid requesting music, sending now"
+          )
+          currentlyPlaying = Some(mid)
+          sendMusic(mid, ref)
+        } else {
+          // Someone is playing, add to queue
+          if (!requestQueue.contains(mid)) {
+            requestQueue = requestQueue :+ mid
+            displayActor ! Message(
+              s"Chef: Musician $mid queued (someone is playing)"
+            )
+          }
+        }
+      }
+    }
+    case FinishedPlaying(mid) => {
+      displayActor ! Message(s"Chef: Musician $mid finished playing")
+      currentlyPlaying = None
+
+      // Pick next musician - either from queue or round-robin through registered musicians
+      val nextMusician = if (requestQueue.nonEmpty) {
+        val next = requestQueue.head
+        requestQueue = requestQueue.tail
+        next
+      } else if (musicians.nonEmpty) {
+        // Round-robin: pick next musician after the one who just finished
+        val musicianIds = musicians.keys.toList.sorted
+        val currentIndex = musicianIds.indexOf(mid)
+        if (currentIndex >= 0) {
+          musicianIds((currentIndex + 1) % musicianIds.size)
+        } else {
+          musicianIds.head
+        }
+      } else {
+        mid // Fallback
+      }
+
+      musicians.get(nextMusician).foreach { ref =>
+        displayActor ! Message(
+          s"Chef: Sending next measure to Musician $nextMusician"
+        )
+        currentlyPlaying = Some(nextMusician)
+        sendMusic(nextMusician, ref)
+      }
     }
     case Unregister(mid) => {
       musicians -= mid
