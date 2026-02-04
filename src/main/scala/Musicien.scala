@@ -130,7 +130,7 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
 
     case Abort =>
       displayActor ! Message(s"Musicien $id: abort received, stopping")
-      context.stop(self)
+      context.system.terminate()
 
     // -------------------- Bully Election (Follower Mode) --------------------
     case StartElection =>
@@ -707,8 +707,10 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       displayActor ! Message(
         "Chef: no musicians joined after 30 seconds, aborting performance"
       )
-      context.stop(self)
       musicians.values.foreach(_ ! Abort)
+
+      // Shutdown the entire actor system
+      context.system.terminate()
     }
   }
 

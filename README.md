@@ -125,7 +125,7 @@ Le système garantit une **continuité musicale parfaite** même en cas de panne
         ---------------------------------------------------
 ```
 
-### 2. Messages Musicien ↔ Chef
+### 2. Messages Musicien ↔ Chef ( Deroulement d'une Performance )
 ```
         Musicien (Follower)              Chef
                |                          |
