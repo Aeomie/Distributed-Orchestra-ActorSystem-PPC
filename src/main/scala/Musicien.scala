@@ -25,6 +25,7 @@ case class WinnerAnnounceTimeout(winnerId: Int)
 
 case class ChefIs(ref: ActorRef)
 case class Register(id: Int)
+case object RegisterAck
 case object WindowExpired
 case object ChefHeartbeat
 case object RequestMusic
@@ -127,9 +128,29 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       }
     }
 
+    case RegisterAck => {
+      displayActor ! Message(
+        s"Musicien $id: registration acknowledged by chef"
+      )
+      // Cancel timeout since we got acknowledgment
+      if (!electionCancellable.isCancelled) electionCancellable.cancel()
+    }
+
     case AskingChefTimeOut => {
       if (!foundChef && !electionInProgress) {
         self ! StartElection
+      } else if (foundChef && currentChefRef.isDefined) {
+        // We think we have a chef but didn't get RegisterAck - retry registration
+        displayActor ! Message(
+          s"Musicien $id: retrying registration with chef"
+        )
+        currentChefRef.foreach(_ ! Register(this.id))
+        // Set another timeout
+        electionCancellable = context.system.scheduler.scheduleOnce(
+          2.seconds,
+          self,
+          AskingChefTimeOut
+        )
       }
     }
 
@@ -370,6 +391,8 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       if (!cancellable.isCancelled)
         cancellable.cancel()
 
+      // Send acknowledgment
+      sender() ! RegisterAck
       sender() ! StartPerformance
       displayActor ! Message(
         s"Chef: musician $mid started playing 🎵"
@@ -444,11 +467,53 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
       )
     }
     case Terminated(ref) => {
+      // Find which musician crashed
+      val crashedMusician = musicians.find(_._2 == ref).map(_._1)
+
       musicians = musicians.filterNot { case (_, r) => r == ref }
       joined = joined.filter(id => musicians.contains(id))
       displayActor ! Message(
         s"Chef: a musician crashed, remaining=${joined.size}"
       )
+
+      // Clean up stale references
+      crashedMusician.foreach { mid =>
+        // Remove from request queue if present
+        requestQueue = requestQueue.filterNot(_ == mid)
+
+        // If crashed musician was currently playing, clear that state and select next
+        if (currentlyPlaying.contains(mid)) {
+          currentlyPlaying = None
+          displayActor ! Message(
+            s"Chef: Crashed musician $mid was playing, selecting next musician"
+          )
+
+          // Select next musician to continue performance
+          if (joined.nonEmpty) {
+            val nextMusician = if (requestQueue.nonEmpty) {
+              val next = requestQueue.head
+              requestQueue = requestQueue.tail
+              next
+            } else {
+              // Pick first available musician
+              musicians.keys.head
+            }
+
+            musicians.get(nextMusician).foreach { ref =>
+              displayActor ! Message(
+                s"Chef: Continuing performance with Musician $nextMusician"
+              )
+              currentlyPlaying = Some(nextMusician)
+              sendMusic(nextMusician, ref)
+            }
+          }
+        } else {
+          // Crashed musician was not playing, performance should continue normally
+          displayActor ! Message(
+            s"Chef: Musician $mid crashed but was not playing, continuing normally"
+          )
+        }
+      }
 
       if (joined.isEmpty) {
         if (!cancellable.isCancelled) cancellable.cancel()
@@ -507,6 +572,13 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
         )
         // Cancel heartbeat when stepping down
         if (!heartbeatCancellable.isCancelled) heartbeatCancellable.cancel()
+
+        // Clean up DataBaseActor when stepping down
+        dbActor.foreach { actor =>
+          context.stop(actor)
+          dbActor = None
+        }
+
         isChef = false
         context.become(follower)
         self ! ChefAnnouncement(chefId, chefCreationTime, chefRef)
@@ -527,7 +599,10 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
     currentChefCreationTime = Some(this.creationTime)
     currentChefRef = Some(self)
 
-    // Create DataBaseActor for music measures
+    // Create DataBaseActor for music measures (clean up existing one first)
+    dbActor.foreach { actor =>
+      context.stop(actor)
+    }
     dbActor = Some(
       context.actorOf(Props[DataBaseActor], name = "DataBaseActor")
     )
@@ -659,6 +734,13 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
 
       context.watch(winnerRef)
       winnerRef ! Register(this.id)
+
+      // Set up timeout for registration acknowledgment
+      electionCancellable = context.system.scheduler.scheduleOnce(
+        2.seconds,
+        self,
+        AskingChefTimeOut
+      )
 
       displayActor ! Message(
         s"Musicien $id: now following elected Chef $winnerId"
