@@ -88,3 +88,134 @@ Le système garantit une **continuité musicale parfaite** même en cas de panne
 **Problème réseau** : L'enregistrement pouvait échouer à cause des communications réseau. Le chef perdait parfois les messages, alors que le musicien pensait être enregistré.
 
 **Solution** : Implémentation d'un système d'accusé de réception (`RegisterAck`) pour que le musicien soit sûr d'être accepté par le chef, avec retry automatique en cas d'échec.
+
+## Schémas d'Architecture
+
+### 1.1. Messages Musician ↔ Musician (Élection/Discovery)
+```
+                 (Remote) autres systèmes Akka
+   Musicien0        Musicien1        Musicien2        Musicien3
+      |                |                |                |
+      +----------------+----------------+----------------+
+                   messages peer-to-peer
+        ---------------------------------------------------
+        | WhoIsChef / NoChefHere                           |
+        | Alive / AliveResponse(id, creationTime)          |
+        | StartElection / ContinueElection / ComputeWinner |
+        | AreYouAlive / ImAlive                            |
+        ---------------------------------------------------
+```
+
+### 1.2. Messages Chef ↔ Musicians (Remote)
+```
+                 (Remote) autres systèmes Akka
+   Musicien0        Musicien1        Musicien2        Musicien3
+      |                |                |                |
+      +----------------+----------------+----------------+
+                  messages chef-musicien
+        ---------------------------------------------------
+        | ChefHere(id, creationTime)                       |
+        | ChefAnnouncement(id, creationTime, ref)          |
+        | ChefHeartbeat                                    |
+        | Register(id) / RegisterAck                       |
+        | RequestMusic                                     |
+        | Measure(chords)                                  |
+        | FinishedPlaying(musicianId)                      |
+        | StartPerformance                                 |
+        ---------------------------------------------------
+```
+
+### 2. Messages Musicien ↔ Chef
+```
+        Musicien (Follower)              Chef
+               |                          |
+               | Register(id)            |
+               |------------------------>|
+               |                         |
+               |        RegisterAck      |
+               |<------------------------|
+               |                         |
+               |     StartPerformance    |
+               |<------------------------|
+               |                         |
+               |      RequestMusic       |
+               |------------------------>|
+               |                         |
+               |    Measure(chords)      |
+               |<------------------------|
+               |                         |
+               | FinishedPlaying(id)     |
+               |------------------------>|
+               |          .              |
+               |          .              |  (cycle continues...)
+               |          .              |
+               |      RequestMusic       |
+               |------------------------>|
+               |    Measure(chords)      |
+               |<------------------------|
+               |                         |
+               | FinishedPlaying(id)     |
+               |------------------------>|
+               |                         |
+               |    [TERMINATION]        |
+               |    Unregister(id)       |
+               |------------------------>|
+```
+
+### 2.1. Élection du Chef (Algorithme Bully)
+```
+     Musicien0        Musicien1        Musicien2        Musicien3
+        |                |                |                |
+        |                |   WhoIsChef?   |                |
+        |                |<---------------|                |
+        |                | NoChefHere     |                |
+        |                |--------------->|                |
+        |                |                |                |
+        |                | StartElection  |                |
+        |                |<---------------|                |
+        |   Alive        |                |                |
+        |<---------------|                |                |
+        | AliveResponse  |                |                |
+        |--------------->|                |                |
+        |                |   Alive        |                |
+        |                |--------------->|                |
+        |                | AliveResponse  |                |
+        |                |<---------------|                |
+        |                |                |                |
+        |                | ComputeWinner  |                |
+        |                |                |                |
+        | ChefAnnouncement(0, creationTime, ref)           |
+        |<-------------------------------------------------|
+        |                |<---------------|                |
+        |                |                |<---------------|
+        |                |                |                |
+        |   Register(1)  |                |                |
+        |--------------->|                |                |
+        | RegisterAck    |                |                |
+        |<---------------|                |                |
+        |StartPerformance|                |                |
+        |<---------------|                |                |
+```
+
+### 3. Architecture Interne d'un Node
+```
++------------------------------------------------------------------+
+| ActorSystem MozartSystem<i>                                       |
+|                                                                  |
+|  /user/Musicien<i>   (acteur principal)                           |
+|                                                                  |
+|   Sous-acteurs :                                                  |
+|                                                                  |
+|   +--> displayActor                                               |
+|   |     Messages : Message(String)                                |
+|                                                                  |
+|   +--> playerActor                                                |
+|   |     Musicien → PlayerActor : Measure(chords)                  |
+|   |     PlayerActor → Musicien : MeasureFinished                  |
+|                                                                  |
+|   +--> DataBaseActor (SI CHEF)                                    |
+|         Chef → DataBaseActor : GetMeasure(num)                    |
+|         DataBaseActor → Chef : Measure(chords)                    |
++------------------------------------------------------------------+
+```
+
