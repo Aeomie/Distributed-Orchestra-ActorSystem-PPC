@@ -43,6 +43,11 @@ case class WinnerAnnounceTimeout(winnerId: Int)
 // ==================== Heartbeat Messages ====================
 case object ChefHeartbeat
 
+// ==================== Test Crash Messages ====================
+case object CrashPlayerActor
+case object CrashDbActor
+case object CrashDisplayActor
+
 class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
   import context.dispatcher
   import akka.actor.SupervisorStrategy._
@@ -157,6 +162,22 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
     // -------------------- Chef Termination --------------------
     case Terminated(ref) if currentChefRef.contains(ref) && !isChef =>
       handleChefTermination()
+
+    // -------------------- Test Crash Handlers --------------------
+    case CrashPlayerActor =>
+      displayActor ! Message(s"Musicien $id: 💥 Crashing PlayerActor!")
+      // Send message to playerActor to crash itself
+      playerActor ! CrashPlayerActor
+
+    case CrashDbActor =>
+      displayActor ! Message(s"Musicien $id: 💥 Crashing DatabaseActor!")
+      // Send message to dbActor to crash itself
+      dbActor.foreach(_ ! CrashDbActor)
+
+    case CrashDisplayActor =>
+      displayActor ! Message(s"Musicien $id: 💥 Crashing DisplayActor!")
+      // Send message to displayActor to crash itself
+      displayActor ! CrashDisplayActor
   }
 
   // ==================== CHEF BEHAVIOR ====================
@@ -203,6 +224,22 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
 
     case ChefAnnouncement(chefId, chefCreationTime, chefRef) =>
       handleChefAnnouncementAsChef(chefId, chefCreationTime, chefRef)
+
+    // -------------------- Test Crash Handlers --------------------
+    case CrashPlayerActor =>
+      displayActor ! Message(s"Chef $id: 💥 Crashing PlayerActor!")
+      // Send message to playerActor to crash itself
+      playerActor ! CrashPlayerActor
+
+    case CrashDbActor =>
+      displayActor ! Message(s"Chef $id: 💥 Crashing DatabaseActor!")
+      // Send message to dbActor to crash itself
+      dbActor.foreach(_ ! CrashDbActor)
+
+    case CrashDisplayActor =>
+      displayActor ! Message(s"Chef $id: 💥 Crashing DisplayActor!")
+      // Send message to displayActor to crash itself
+      displayActor ! CrashDisplayActor
   }
 
   // ==================== CORE BEHAVIORS ====================
@@ -552,6 +589,12 @@ class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
     cancellable =
       context.system.scheduler.scheduleOnce(30.seconds, self, WindowExpired)
     displayActor ! Message("Chef: 30s join window started")
+
+    // Schedule test crashes to test supervision strategy
+    displayActor ! Message("Chef: Scheduling crash tests...")
+    context.system.scheduler.scheduleOnce(5.seconds, self, CrashPlayerActor)
+    context.system.scheduler.scheduleOnce(10.seconds, self, CrashDbActor)
+    context.system.scheduler.scheduleOnce(15.seconds, self, CrashDisplayActor)
   }
 
   private def distributeMeasure(chords: List[Chord]): Unit = {

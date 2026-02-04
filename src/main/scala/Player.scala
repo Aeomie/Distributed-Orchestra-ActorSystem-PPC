@@ -40,6 +40,9 @@ object PlayerActor {
 class PlayerActor() extends Actor {
   import DataBaseActor._
   import PlayerActor._
+  // Import crash messages
+  import upmc.akka.leader.CrashPlayerActor
+
   device.open()
 
   def receive = {
@@ -75,6 +78,11 @@ class PlayerActor() extends Actor {
       context.system.scheduler.scheduleOnce((at + d) milliseconds)(
         note_off(p, 10)
       )
+    }
+
+    case CrashPlayerActor => {
+      println("PlayerActor: Received crash command, throwing exception!")
+      throw new RuntimeException("Test crash: PlayerActor")
     }
   }
 }
