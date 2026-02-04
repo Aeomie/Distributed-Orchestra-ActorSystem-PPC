@@ -32,7 +32,6 @@ override val supervisorStrategy = OneForOneStrategy() {
 }
 ```
 - **Redémarrage automatique** des acteurs enfants crashés
-- **Tolérance transparente** : la musique continue malgré les pannes locales
 
 ### Gestion des Pannes de Musiciens
 - **Détection** : Le chef surveille les musiciens via `context.watch()`
