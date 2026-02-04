@@ -1,6 +1,10 @@
 # Jeu de Mozart Distribué - Système Akka Résistant aux Pannes
 
-## Vue d'ensemble
+## Membres
+- Ounnoughi Kheireddine
+- Ludmilla Messaoudi
+
+## Idée
 Ce projet implémente le Jeu de Mozart dans un système distribué utilisant Akka. Le système supporte 4 musiciens s'exécutant en parallèle et assure une résistance complète aux défaillances.
 
 ## Architecture de l'Acteur Musicien
@@ -88,7 +92,7 @@ Le système garantit une **continuité musicale parfaite** même en cas de panne
 
 **Solution** : Implémentation d'un système d'accusé de réception (`RegisterAck`) pour que le musicien soit sûr d'être accepté par le chef, avec retry automatique en cas d'échec.
 
-## Schémas d'Architecture
+## Schémas d'Architecture ( Question 1 ) 
 
 ### 1.1. Messages Musician ↔ Musician (Élection/Discovery)
 ```
@@ -218,3 +222,5 @@ Le système garantit une **continuité musicale parfaite** même en cas de panne
 +------------------------------------------------------------------+
 ```
 
+### Tests sur d'autres Pcs: ( Question 4)
+- Le système a été lancé sur une autre machine et a bien fonctionné. Les acteurs ont pu se synchroniser correctement. Pour cela, nous avons simplement modifié les adresses IP des acteurs distants dans le fichier application.conf.
