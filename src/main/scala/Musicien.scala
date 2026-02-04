@@ -45,6 +45,12 @@ case object ChefHeartbeat
 
 class Musicien(val id: Int, val terminaux: List[Terminal]) extends Actor {
   import context.dispatcher
+  import akka.actor.SupervisorStrategy._
+
+  // ==================== Supervision Strategy ====================
+  override val supervisorStrategy = OneForOneStrategy() { case _: Exception =>
+    Restart // Restart any crashed child actor
+  }
 
   // ==================== Child Actors ====================
   val displayActor = context.actorOf(Props[DisplayActor], name = "displayActor")
